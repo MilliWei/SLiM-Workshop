@@ -33,7 +33,7 @@ The workflow has three stages:
 | Old population size | 4,000 |
 | Middle population size | 3,000 |
 | Young population size | 2,000 |
-| Migration rate between neighbours | 0.1 |
+| Migration rate between neighbours | 0.01 |
 | Chromosomes | 2 autosomes |
 | Chromosome length | 2,500,000 positions |
 | Recombination rate | `1e-8` per position per generation |
