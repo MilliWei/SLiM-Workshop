@@ -1,0 +1,352 @@
+// S1: neutral quantitative trait + serial population structure.
+
+initialize()
+{
+    if (!exists("SEED"))
+        defineConstant("SEED", 1024);
+    if (!exists("OUT_DIR"))
+        defineConstant("OUT_DIR", "results/S1_neutral_structure_10pop");
+
+    if (!exists("N_OLD")) defineConstant("N_OLD", 4000);
+    if (!exists("N_MIDDLE")) defineConstant("N_MIDDLE", 3000);
+    if (!exists("N_YOUNG")) defineConstant("N_YOUNG", 2000);
+    if (!exists("CHR_LENGTH")) defineConstant("CHR_LENGTH", 2500000);
+    if (!exists("MIGRATION")) defineConstant("MIGRATION", 0.1);
+    if (!exists("RECOMBINATION_RATE"))
+        defineConstant("RECOMBINATION_RATE", 1e-8);
+    if (!exists("QTL_MUTATION_RATE"))
+        defineConstant("QTL_MUTATION_RATE", 1e-4);
+    if (!exists("QTL_EFFECT")) defineConstant("QTL_EFFECT", 0.05);
+    if (!exists("TARGET_H2")) defineConstant("TARGET_H2", 0.5);
+    if (!exists("SAMPLE_PER_POP")) defineConstant("SAMPLE_PER_POP", 300);
+    if (!exists("BINARY_THRESHOLD")) defineConstant("BINARY_THRESHOLD", 0.0);
+
+    // The six QTLs remain at these percentages when CHR_LENGTH changes:
+    // 13.252%, 28.668%, 41.704%, 53.080%, 71.400%, and 91.136%.
+    defineConstant("QTL_POSITION_FRACTIONS",
+        c(0.13252, 0.28668, 0.41704, 0.53080, 0.71400, 0.91136));
+    defineConstant("QTL_POSITIONS",
+        asInteger(round(QTL_POSITION_FRACTIONS * CHR_LENGTH)));
+    defineConstant("N_QTL", 2 * size(QTL_POSITIONS));
+
+    setSeed(SEED);
+    initializeSLiMModelType("WF");
+    initializeTreeSeq();
+
+    initializeMutationType("m1", 0.5, "f", 0.0);
+    qtlEffects = "if (runif(1) < 0.5) -QTL_EFFECT; else QTL_EFFECT;";
+    initializeMutationType("m2", 0.5, "s", qtlEffects);
+    m2.convertToSubstitution = F;
+    m2.mutationStackPolicy = "l";
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElementType("g2", m2, 1.0);
+
+    // Two autosomes in this reduced test version.
+    chromosomeTypes = c("A", "A");
+    chromosomeSymbols = c("A1", "A2");
+    for (chromosome in 1:2)
+    {
+        initializeChromosome(chromosome, CHR_LENGTH,
+            type=chromosomeTypes[chromosome - 1],
+            symbol=chromosomeSymbols[chromosome - 1]);
+
+        positions = QTL_POSITIONS;
+        start = 0;
+        for (pos in positions)
+        {
+            if (start <= pos - 1)
+                initializeGenomicElement(g1, start, pos - 1);
+            initializeGenomicElement(g2, pos, pos);
+            start = pos + 1;
+        }
+        if (start <= CHR_LENGTH - 1)
+            initializeGenomicElement(g1, start, CHR_LENGTH - 1);
+
+        // Mutations arise only at QTL positions during the forward simulation.
+        rates = 0.0;
+        ends = positions[0] - 1;
+        for (i in seqAlong(positions))
+        {
+            pos = positions[i];
+            rates = c(rates, QTL_MUTATION_RATE);
+            ends = c(ends, pos);
+            nextPos = (i < size(positions) - 1) ?
+                positions[i + 1] else CHR_LENGTH;
+            if (pos < nextPos - 1)
+            {
+                rates = c(rates, 0.0);
+                ends = c(ends, nextPos - 1);
+            }
+        }
+        initializeMutationRate(rates, ends);
+        initializeRecombinationRate(RECOMBINATION_RATE);
+    }
+}
+
+// Make every QTL position behave as a two-allele +/- marker.
+mutation(m2)
+{
+    previous = haplosome.containsMarkerMutation(m2, mut.position, T);
+    if (!isNULL(previous))
+        mut.setSelectionCoeff(-previous.selectionCoeff);
+    return T;
+}
+
+// QTLs affect the recorded phenotype but do not affect fitness.
+mutationEffect(m2) { return 1.0; }
+
+1 early()
+{
+    createDirectory("results");
+    createDirectory(OUT_DIR);
+    sim.addSubpop("p1", N_OLD);
+
+    // Start each QTL at approximately 50% plus and 50% minus alleles.
+    for (chromosome in 1:2)
+    {
+        h = p1.haplosomesForChromosomes(chromosome, includeNulls=F);
+        for (pos in QTL_POSITIONS)
+        {
+            plusIndex = sample(seqAlong(h), asInteger(size(h) / 2));
+            isPlus = rep(F, size(h));
+            isPlus[plusIndex] = T;
+            h[isPlus].addNewMutation(m2, QTL_EFFECT, pos);
+            h[!isPlus].addNewMutation(m2, -QTL_EFFECT, pos);
+        }
+    }
+
+    writeFile(OUT_DIR + "/population_map.tsv",
+        "population\tstage\tsource_population\tfounding_tick\ttarget_size\n" +
+        "p1\told_1\tancestor\t1\t" + N_OLD + "\n" +
+        "p2\told_2\tp1\t1000\t" + N_OLD + "\n" +
+        "p3\told_3\tp2\t1400\t" + N_OLD + "\n" +
+        "p4\tmiddle_1\tp3\t1800\t" + N_MIDDLE + "\n" +
+        "p5\tmiddle_2\tp4\t2200\t" + N_MIDDLE + "\n" +
+        "p6\tmiddle_3\tp5\t2600\t" + N_MIDDLE + "\n" +
+        "p7\tyoung_1\tp6\t3000\t" + N_YOUNG + "\n" +
+        "p8\tyoung_2\tp7\t3400\t" + N_YOUNG + "\n" +
+        "p9\tyoung_3\tp8\t3800\t" + N_YOUNG + "\n" +
+        "p10\tyoung_4\tp9\t4200\t" + N_YOUNG);
+    writeFile(OUT_DIR + "/population_summary.tsv",
+        "generation\tpopulation\tn\tmean_genetic_value\tsd_genetic_value");
+}
+
+// Serial splits; migration is allowed only between neighbouring populations.
+1000 early()
+{
+    sim.addSubpopSplit("p2", N_OLD, p1);
+    p1.setMigrationRates(p2, MIGRATION);
+    p2.setMigrationRates(p1, MIGRATION);
+}
+
+1400 early()
+{
+    sim.addSubpopSplit("p3", N_OLD, p2);
+    p2.setMigrationRates(p3, MIGRATION);
+    p3.setMigrationRates(p2, MIGRATION);
+}
+
+1800 early()
+{
+    sim.addSubpopSplit("p4", N_MIDDLE, p3);
+    p3.setMigrationRates(p4, MIGRATION);
+    p4.setMigrationRates(p3, MIGRATION);
+}
+
+2200 early()
+{
+    sim.addSubpopSplit("p5", N_MIDDLE, p4);
+    p4.setMigrationRates(p5, MIGRATION);
+    p5.setMigrationRates(p4, MIGRATION);
+}
+
+2600 early()
+{
+    sim.addSubpopSplit("p6", N_MIDDLE, p5);
+    p5.setMigrationRates(p6, MIGRATION);
+    p6.setMigrationRates(p5, MIGRATION);
+}
+
+3000 early()
+{
+    sim.addSubpopSplit("p7", N_YOUNG, p6);
+    p6.setMigrationRates(p7, MIGRATION);
+    p7.setMigrationRates(p6, MIGRATION);
+}
+
+3400 early()
+{
+    sim.addSubpopSplit("p8", N_YOUNG, p7);
+    p7.setMigrationRates(p8, MIGRATION);
+    p8.setMigrationRates(p7, MIGRATION);
+}
+
+3800 early()
+{
+    sim.addSubpopSplit("p9", N_YOUNG, p8);
+    p8.setMigrationRates(p9, MIGRATION);
+    p9.setMigrationRates(p8, MIGRATION);
+}
+
+4200 early()
+{
+    sim.addSubpopSplit("p10", N_YOUNG, p9);
+    p9.setMigrationRates(p10, MIGRATION);
+    p10.setMigrationRates(p9, MIGRATION);
+}
+
+1:5000 late()
+{
+    if ((sim.cycle % 100 == 0) | (sim.cycle == 1))
+        for (pop in sim.subpopulations)
+        {
+            inds = pop.individuals;
+            geneticValues = inds.sumOfMutationsOfType(m2);
+            writeFile(OUT_DIR + "/population_summary.tsv",
+                sim.cycle + "\t" + pop.id + "\t" + pop.individualCount +
+                "\t" + mean(geneticValues) + "\t" + sd(geneticValues),
+                append=T);
+        }
+}
+
+5000 late()
+{
+    // Randomly select the downstream sample without changing population sizes.
+    sampledInds = NULL;
+    for (pop in sim.subpopulations)
+    {
+        nToSample = min(c(SAMPLE_PER_POP, pop.individualCount));
+        sampledInds = c(sampledInds, sample(pop.individuals, nToSample));
+    }
+
+    geneticValues = sampledInds.sumOfMutationsOfType(m2);
+    geneticVariance = sd(geneticValues)^2;
+    environmentalVariance = geneticVariance * (1.0 - TARGET_H2) / TARGET_H2;
+    environmentalDeviations = rnorm(size(sampledInds), 0.0,
+        sqrt(environmentalVariance));
+    phenotypes = geneticValues + environmentalDeviations;
+    
+    // Median threshold produces approximately balanced binary classes.
+    binaryPhenotypes = asInteger(phenotypes > BINARY_THRESHOLD);
+    
+    class0Count = sum(binaryPhenotypes == 0);
+    class1Count = sum(binaryPhenotypes == 1);
+    class1Proportion =
+    class1Count / size(binaryPhenotypes);
+
+    individualPath = OUT_DIR + "/individuals.tsv";
+    writeFile(individualPath,
+    "individual_id\tpopulation\tgenetic_value\t" +
+    "environmental_deviation\tliability\tphenotype_binary");
+		  for (i in seqAlong(sampledInds))
+        {
+             ind = sampledInds[i];
+
+             writeFile(individualPath,
+        		 ind.pedigreeID + "\t" +
+             ind.subpopulation.id + "\t" +
+             geneticValues[i] + "\t" +
+             environmentalDeviations[i] + "\t" +
+             phenotypes[i] + "\t" +
+             binaryPhenotypes[i],
+             append=T);
+        }
+    
+    binaryPopulationPath =
+    OUT_DIR + "/binary_population_summary.tsv";
+
+	 writeFile(binaryPopulationPath,
+    "population\tsample_n\tclass_0_n\tclass_1_n\tclass_1_proportion");
+
+		  for (pop in sim.subpopulations)
+        {
+        
+            inPopulation =
+                sampledInds.subpopulation.id == pop.id;
+
+            populationBinary =
+                binaryPhenotypes[inPopulation];
+
+    			populationClass0 =
+       			 sum(populationBinary == 0);
+
+    			populationClass1 =
+       			 sum(populationBinary == 1);
+
+ 			   writeFile(binaryPopulationPath,
+      		    pop.id + "\t" +
+                size(populationBinary) + "\t" +
+        			 populationClass0 + "\t" +
+        			 populationClass1 + "\t" +
+      			 populationClass1 / size(populationBinary),
+                append=T);
+		   }
+
+    realizedEnvironmentalVariance = sd(environmentalDeviations)^2;
+    realizedH2 = geneticVariance /
+        (geneticVariance + realizedEnvironmentalVariance);
+    writeFile(OUT_DIR + "/trait_summary.tsv",
+        "requested_per_population\tsample_n\ttarget_h2\t" +
+        "genetic_variance\tenvironmental_variance\trealized_h2\t" +
+        "binary_threshold\tclass_0_n\tclass_1_n\tclass_1_proportion\n" +
+
+        SAMPLE_PER_POP + "\t" +
+        size(sampledInds) + "\t" +
+        TARGET_H2 + "\t" +
+        geneticVariance + "\t" +
+  		  realizedEnvironmentalVariance + "\t" +
+   	  realizedH2 + "\t" +
+   	  binaryThreshold + "\t" +
+    	  class0Count + "\t" +
+        class1Count + "\t" +
+        class1Proportion);
+
+    // With two autosomes and six QTLs per chromosome, N_QTL is 12.
+    dosagePath = OUT_DIR + "/qtl_plus_allele_dosage.tsv";
+    dosageHeader = "individual_id\tpopulation";
+    for (qtlIndex in 1:N_QTL)
+        dosageHeader = dosageHeader + "\tQTL" + qtlIndex;
+    writeFile(dosagePath, dosageHeader);
+
+    for (ind in sampledInds)
+    {
+        dosageRow = ind.pedigreeID + "\t" + ind.subpopulation.id;
+        for (chromosome in 1:2)
+        {
+            h = ind.haplosomesForChromosomes(chromosome, includeNulls=F);
+            for (pos in QTL_POSITIONS)
+            {
+                dosage = 0;
+                for (haplosome in h)
+                {
+                    allele = haplosome.containsMarkerMutation(m2, pos, T);
+                    if (!isNULL(allele))
+                        dosage = dosage + asInteger(allele.selectionCoeff > 0.0);
+                }
+                dosageRow = dosageRow + "\t" + dosage;
+            }
+        }
+        writeFile(dosagePath, dosageRow, append=T);
+    }
+
+    mapPath = OUT_DIR + "/qtl_map.tsv";
+    writeFile(mapPath,
+        "qtl\tchromosome\tchromosome_type\tposition\tposition_fraction\t" +
+        "position_percent\teffect_minus\teffect_plus\tfitness_effect");
+    qtlNumber = 1;
+    for (chromosome in 1:2)
+        for (i in seqAlong(QTL_POSITIONS))
+        {
+            pos = QTL_POSITIONS[i];
+            fraction = QTL_POSITION_FRACTIONS[i];
+            writeFile(mapPath,
+                "QTL" + qtlNumber + "\t" + chromosome + "\tautosome\t" +
+                pos + "\t" + fraction + "\t" + (100.0 * fraction) +
+                "\t-" + QTL_EFFECT + "\t" + QTL_EFFECT + "\tneutral",
+                append=T);
+            qtlNumber = qtlNumber + 1;
+        }
+
+    sim.treeSeqOutput(OUT_DIR + "/final_trees", overwriteDirectory=T);
+    sim.simulationFinished();
+}
