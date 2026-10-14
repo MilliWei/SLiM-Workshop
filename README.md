@@ -4,9 +4,7 @@
 
 This workflow simulates population structure and a neutral, genetically
 influenced binary trait. Here, *neutral* means that the trait and its causal
-QTLs do not affect fitness or reproductive success. It does not mean that the
-trait is independent of genotype.
-
+QTLs do not affect fitness or reproductive success.
 The workflow has three stages:
 
 1. `S1_neutral_structure.slim` simulates the population history, QTLs,
@@ -17,16 +15,13 @@ The workflow has three stages:
 3. `make_vae_input.py` aligns the genotype matrix, binary phenotype, and
    population labels by pedigree ID and checks the resulting arrays.
 
-The current setup is a reduced two-chromosome test model rather than the final
-eight-linkage-group Laupala model.
-
 ## Files
 
 | File | Purpose |
 |---|---|
 | `S1_neutral_structure.slim` | Forward simulation and phenotype generation |
 | `export_neutral_snps.py` | Tree-sequence simplification, recapitation, neutral SNP overlay, and genotype export |
-| `make_vae_input.py` | Alignment and validation of `X`, `y`, and population labels |
+| `make_vae_input.py` | Alignment and validation of `x`, `y`, and population labels |
 
 ## Current simulation settings
 
@@ -60,9 +55,8 @@ Populations `p1-p3`, `p4-p6`, and `p7-p10` represent the old, middle,
 and young groups, respectively. Migration occurs only between neighbouring
 populations.
 
-The present migration rate of `0.1` and recombination rate of `1e-8` are the
-values used for the current test. They should be reviewed before final
-biological replicates. With a chromosome length of 2,500,000, `1e-8`
+The present migration rate of `0.01` and recombination rate of `1e-8` are the
+values used for the current test. With a chromosome length of 2,500,000, `1e-8`
 corresponds to approximately 0.025 Morgan, or 2.5 cM, per chromosome.
 
 ## Trait generation
@@ -83,9 +77,7 @@ liability <= 0.0  -> phenotype_binary = 0
 liability >  0.0  -> phenotype_binary = 1
 ```
 
-Both liability and binary phenotype are retained. The binary phenotype is the
-trait supplied to the current VAE workflow; liability is retained to audit the
-simulation and realised heritability.
+Both liability and binary phenotype are retained.
 
 ## Requirements
 
@@ -96,14 +88,6 @@ simulation and realised heritability.
 - tskit
 - PySLiM
 - msprime
-
-One possible environment setup is:
-
-```bash
-conda create -n slim-vae python=3.12 -y
-conda activate slim-vae
-pip install numpy pandas tskit pyslim msprime
-```
 
 ## Step 1: run SLiM
 
@@ -131,15 +115,6 @@ Important outputs include:
 | `binary_population_summary.tsv` | Class 0 and class 1 counts within each population |
 | `population_map.tsv` | Population split history |
 | `population_summary.tsv` | Population sizes and genetic-value summaries through time |
-
-Parameters may be overridden at runtime. For example:
-
-```bash
-slim -d SEED=1025 -d SAMPLE_PER_POP=300 S1_neutral_structure.slim
-```
-
-Use a different `OUT_DIR` for each replicate to prevent overwriting previous
-results.
 
 ## Step 2: generate the genotype matrix
 
@@ -176,7 +151,7 @@ Total: 49,988 neutral SNPs + 12 QTLs = 50,000 columns
 ```
 
 The QTLs are inserted among the neutral SNPs according to chromosome and
-position. They are not appended as the final 12 columns.
+position.
 
 Post-processing outputs include:
 
@@ -190,10 +165,6 @@ Post-processing outputs include:
 | `chromosome_1_neutral.trees` | Simplified chromosome 1 tree sequence with neutral sites |
 | `chromosome_2_neutral.trees` | Simplified chromosome 2 tree sequence with neutral sites |
 | `manifest.tsv` | Number of neutral sites and individuals per chromosome |
-
-An older matrix with shape `(3000, 50012)` was produced by appending 12 QTLs
-after 50,000 neutral SNPs. That layout is obsolete. The corrected matrix must
-have shape `(3000, 50000)`.
 
 ## Step 3: prepare VAE inputs
 
@@ -218,60 +189,6 @@ y phenotype: (3000,)
 population:  (3000,)
 ```
 
-No transpose is required. Rows are individuals and columns are genomic
-features. For row `i`:
-
-```text
-X[i, :]       = genotype of individual i
-y[i]          = binary phenotype of individual i
-population[i] = population of individual i
-```
-
-The joint genotype-trait VAE receives both genotype and binary phenotype. If
-the model accepts separate arguments, batches should have shapes:
-
-```text
-genotype_batch: (batch_size, 50000)
-trait_batch:    (batch_size, 1)
-```
-
-If the model explicitly concatenates genotype and phenotype before encoding,
-the joint input has shape `(batch_size, 50001)`.
-
-## Locating the causal QTLs
-
-QTL matrix columns must be read from `combined_feature_map.tsv`, because QTLs
-are inserted at their genomic positions:
-
-```python
-import numpy as np
-import pandas as pd
-
-X = np.load(
-    "results/S1_neutral_structure_10pop/neutral_snps/"
-    "combined_neutral_and_qtl_dosage.npy",
-    mmap_mode="r",
-)
-
-feature_map = pd.read_csv(
-    "results/S1_neutral_structure_10pop/neutral_snps/"
-    "combined_feature_map.tsv",
-    sep="\t",
-)
-
-qtl_features = feature_map[
-    feature_map["feature_type"] == "causal_qtl"
-]
-qtl_columns = qtl_features["column"].to_numpy()
-X_qtl = X[:, qtl_columns]
-
-print(qtl_features)
-print(X_qtl.shape)  # (3000, 12)
-```
-
-Use this mapping to compare downstream feature importance or SHAP values with
-the known causal variants.
-
 ## Current single-run result
 
 The current run used 3,000 sampled individuals and took approximately four
@@ -286,25 +203,3 @@ class 0:            1,224 individuals
 class 1:            1,776 individuals
 class 1 proportion: 0.592
 ```
-
-The class 1 proportions across populations ranged from 0.550 to 0.643 in this
-run. This is one run from one seed. No replicate simulations have yet been
-completed, so these values do not quantify between-replicate variation.
-
-## Reproducibility checks
-
-Before VAE training, verify:
-
-```python
-assert X.shape == (3000, 50000)
-assert y.shape == (3000,)
-assert population.shape == (3000,)
-assert np.isin(X, [0, 1, 2]).all()
-assert np.isin(y, [0, 1]).all()
-assert np.unique(population).size == 10
-```
-
-For each replicate, retain the random seed, SLiM settings, trait summary,
-population-specific class proportions, QTL map, feature map, and exact sample
-manifest. Train, validation, and test splits must use the same row indices for
-`X`, `y`, and population labels.
