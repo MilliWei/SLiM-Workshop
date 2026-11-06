@@ -1,27 +1,29 @@
-# S1: neutral binary trait with population structure
+#  SLiM population-structure and quantitative-trait simulations
 
 ## Overview
 
 This workflow simulates population structure and a neutral, genetically
 influenced binary trait. Here, *neutral* means that the trait and its causal
 QTLs do not affect fitness or reproductive success.
-The workflow has three stages:
+The workflow generates:
 
-1. `S1_neutral_structure.slim` simulates the population history, QTLs,
-   continuous liability, and binary phenotype.
-2. `export_neutral_snps.py` simplifies the tree sequences to the selected
-   individuals, overlays neutral SNPs, inserts QTLs at their genomic
-   positions, and writes the genotype matrix.
-3. `make_vae_input.py` aligns the genotype matrix, binary phenotype, and
-   population labels by pedigree ID and checks the resulting arrays.
+- a genotype matrix `X` with individuals in rows and variants in columns;
+- a continuous liability and globally balanced binary phenotype `y`;
+- population labels;
+- known causal-QTL positions and effects; and
+- diagnostics for population structure, heritability and class balance.
 
-## Files
+## Current scenarios
 
-| File | Purpose |
-|---|---|
-| `S1_neutral_structure.slim` | Forward simulation and phenotype generation |
-| `export_neutral_snps.py` | Tree-sequence simplification, recapitation, neutral SNP overlay, and genotype export |
-| `make_vae_input.py` | Alignment and validation of `x`, `y`, and population labels |
+| Scenario | Trait selection | Population-specific optimum | Main purpose |
+|---|---|---|---|
+| S1 | None; QTLs are neutral for fitness | None | Neutral-trait benchmark under population structure |
+| S2 Design A | Gaussian stabilising selection | `theta_i = 0` | Global-adaptation benchmark without an imposed environmental gradient |
+| S2 Design B | Gaussian stabilising selection | `theta_i = (i - 1) * delta` | Local-adaptation benchmark with demographic confounding |
+
+The current S1 script is `S1_neutral_structure_10pop_percent_qtl.slim`. The
+S2 script is `S2_trait_no_imposed_confounding.slim`. The S2 filename is retained
+for compatibility, although the script now supports both Designs A and B.
 
 ## Current simulation settings
 
@@ -55,6 +57,12 @@ Populations `p1-p3`, `p4-p6`, and `p7-p10` represent the old, middle,
 and young groups, respectively. Migration occurs only between neighbouring
 populations.
 
+| Populations | Group | Population size |
+|---|---|---:|
+| p1--p3 | Old | 4,000 |
+| p4--p6 | Middle | 3,000 |
+| p7--p10 | Young | 2,000 |
+
 The present migration rate of `0.01` and recombination rate of `1e-8` are the
 values used for the current test. With a chromosome length of 2,500,000, `1e-8`
 corresponds to approximately 0.025 Morgan, or 2.5 cM, per chromosome.
@@ -78,6 +86,14 @@ liability >  0.0  -> phenotype_binary = 1
 ```
 
 Both liability and binary phenotype are retained.
+
+## Repository files
+
+| File | Purpose |
+|---|---|
+| `S1_neutral_structure_10pop_percent_qtl.slim` | Neutral-trait benchmark |
+| `S2_trait_no_imposed_confounding.slim` | Designs A and B under Gaussian selection |
+| `export_neutral_snps.py` | Tree-sequence simplification, recapitation, neutral-SNP overlay and genotype export |
 
 ## Requirements
 
