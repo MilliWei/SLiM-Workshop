@@ -40,7 +40,7 @@ for compatibility, although the script now supports both Designs A and B.
 | Chromosome length | 2,500,000 positions |
 | Recombination rate | `1e-8` per position per generation |
 | QTLs | 6 per chromosome; 12 total |
-| QTL allelic effects | `-0.05` or `+0.05` |
+| QTL allelic effects | `-0.05` or `+0.05` or `-4` or `+4` |
 | QTL fitness effect | Neutral; fitness multiplier 1.0 |
 | Target liability-scale heritability | 0.5 |
 | Binary threshold | 0.0 |
@@ -67,25 +67,108 @@ The present migration rate of `0.01` and recombination rate of `1e-8` are the
 values used for the current test. With a chromosome length of 2,500,000, `1e-8`
 corresponds to approximately 0.025 Morgan, or 2.5 cM, per chromosome.
 
-## Trait generation
+## S1: neutral trait with population structure
 
-For each sampled individual, SLiM calculates the additive genetic value from
-the 12 QTLs and adds an independent environmental deviation:
+S1 uses 12 fixed QTLs with allelic effects `-0.05` and `+0.05`. The QTLs
+contribute to the recorded phenotype but have no effect on survival or
+reproduction. Consequently, the population history evolves neutrally with
+respect to the trait.
+
+At the final generation, an environmental deviation is added to the additive
+genetic value:
+
+<p align="center"><i>P</i><sub>j</sub> = <i>G</i><sub>j</sub> + <i>E</i><sub>j</sub></p>
+
+Environmental variance targets liability-scale `h2=0.5`. The sampled
+liabilities are ranked globally, with the lower half assigned to class 0 and
+the upper half assigned to class 1. Population labels are not used to create
+the binary phenotype.
+
+S1 is used to test whether population structure alone produces spurious SNP
+signals when the simulated trait does not affect fitness.
+
+## S2: quantitative trait under stabilising selection
+
+S2 retains the same demographic history and 12 known causal-QTL positions.
+Each QTL has fixed allelic effects `-4` and `+4`. With 12 diploid QTLs, the
+theoretical additive genetic-value range is `[-96, 96]`.
+
+For individual $j$, the expressed phenotype is:
+
+| Quantity | Definition |
+|---|---|
+| Additive genetic value | <i>G</i><sub>j</sub> = sum of the 12 diploid QTL effects |
+| Environmental variance | <i>V</i><sub>E</sub> = <i>V</i><sub>A, within</sub> × (1 − <i>h</i><sup>2</sup>) / <i>h</i><sup>2</sup> |
+| Environmental deviation | <i>E</i><sub>j</sub> ∼ Normal(0, <i>V</i><sub>E</sub>) |
+| Expressed phenotype | <i>P</i><sub>j</sub> = <i>G</i><sub>j</sub> + <i>E</i><sub>j</sub> |
+
+The target within-population heritability is `h2=0.5`. Environmental variance
+is calculated from pooled within-population additive genetic variance, so
+adaptive differences among population means do not inflate `V_E`.
+
+Fitness follows standard Gaussian stabilising selection:
+
+<p align="center">
+<i>w</i><sub>ij</sub> = exp[−(<i>P</i><sub>ij</sub> − θ<sub>i</sub>)<sup>2</sup> / (2<i>V</i><sub>S</sub>)]
+</p>
+
+`SELECTION_VARIANCE` represents <i>V</i><sub>S</sub>, not its square root. Smaller values
+produce stronger selection around the optimum.
+
+### Design A: common optimum
+
+All populations experience the same optimum:
 
 ```text
-liability = genetic_value + environmental_deviation
+theta_i = 0
+V_S in {10, 22, 50}
 ```
 
-The environmental variance is chosen to target liability-scale heritability
-`h2 = 0.5`. The binary phenotype is then defined using the fixed threshold
-zero:
+Fifty replicates are planned for each value of `V_S`, giving 150 Design A
+replicates.
+
+### Design B: linear environmental gradient
+
+The optimum increases by a fixed amount between adjacent populations:
+
+<p align="center">
+θ<sub>i</sub> = (i − 1)δ, &nbsp;&nbsp;&nbsp;
+δ ∈ {4.6, 10}, &nbsp;&nbsp;&nbsp;
+<i>V</i><sub>S</sub> ∈ {10, 22, 50}
+</p>
+
+Therefore, p<sub>1</sub> begins at θ<sub>1</sub> = 0:
+
+| δ | Population optima from p<sub>1</sub> to p<sub>10</sub> |
+|---:|---|
+| 4.6 | 0, 4.6, 9.2, 13.8, 18.4, 23.0, 27.6, 32.2, 36.8, 41.4 |
+| 10 | 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 |
+
+The ±4 QTL effects make the largest optimum of 90 genetically reachable.
+Each of the six δ × <i>V</i><sub>S</sub> combinations has 50 planned replicates,
+giving 300 Design B replicates.
+
+| Design | δ | <i>V</i><sub>S</sub> | Replicates |
+|---|---:|---:|---:|
+| A | 0 | 10, 22, 50 | 3 × 50 = 150 |
+| B | 4.6, 10 | 10, 22, 50 | 2 × 3 × 50 = 300 |
+
+The complete S2 design therefore contains 450 planned replicates.
+
+## Binary phenotype
+
+The continuous liability is used during evolution and retained in the output.
+At final sampling, all 3,000 individuals are ranked together by liability:
 
 ```text
-liability <= 0.0  -> phenotype_binary = 0
-liability >  0.0  -> phenotype_binary = 1
+lower 1,500 liabilities -> phenotype_binary = 0
+upper 1,500 liabilities -> phenotype_binary = 1
 ```
 
-Both liability and binary phenotype are retained.
+This guarantees global 50/50 balance. It does not impose balance separately
+within each population. Population-specific class proportions are recorded in
+`binary_population_summary.tsv` and are an important confounding diagnostic.
+
 
 ## Repository files
 
