@@ -174,7 +174,7 @@ within each population. Population-specific class proportions are recorded in
 
 | File | Purpose |
 |---|---|
-| `S1_neutral_structure_10pop_percent_qtl.slim` | Neutral-trait benchmark |
+| `S1_neutral_structure.slim` | Neutral-trait benchmark |
 | `S2_trait_no_imposed_confounding.slim` | Designs A and B under Gaussian selection |
 | `export_neutral_snps.py` | Tree-sequence simplification, recapitation, neutral-SNP overlay and genotype export |
 
