@@ -15,7 +15,7 @@ phenotypes = pd.read_csv("S1_neutral_structure_10pop/individuals.tsv",
     sep="\t",
 ).set_index("individual_id")
 
-# 按genotype矩阵的行顺序重新排列phenotype
+# Rearrange the phenotypes in the order of the rows of the genotype matrix
 aligned = phenotypes.loc[samples["pedigree_id"].to_numpy()]
 
 y = aligned["phenotype_binary"].to_numpy(
