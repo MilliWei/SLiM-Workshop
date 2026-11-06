@@ -1,0 +1,496 @@
+// S2: quantitative trait with common (A) or population-specific (B) optima.
+
+initialize()
+{
+    if (!exists("SEED"))
+        defineConstant("SEED", 1024);
+    if (!exists("OUT_DIR"))
+        defineConstant("OUT_DIR", "results/S2_trait_no_imposed_confounding");
+
+    if (!exists("N_OLD")) defineConstant("N_OLD", 4000);
+    if (!exists("N_MIDDLE")) defineConstant("N_MIDDLE", 3000);
+    if (!exists("N_YOUNG")) defineConstant("N_YOUNG", 2000);
+    if (!exists("CHR_LENGTH")) defineConstant("CHR_LENGTH", 2500000);
+    if (!exists("MIGRATION")) defineConstant("MIGRATION", 0.01);
+    if (!exists("RECOMBINATION_RATE"))
+        defineConstant("RECOMBINATION_RATE", 1e-8);
+    if (!exists("QTL_MUTATION_RATE"))
+        defineConstant("QTL_MUTATION_RATE", 1e-4);
+    if (!exists("QTL_EFFECT")) defineConstant("QTL_EFFECT", 4.0);
+    if (!exists("TARGET_H2")) defineConstant("TARGET_H2", 0.5);
+    if (!exists("DESIGN")) defineConstant("DESIGN", "A");
+    if (!exists("COMMON_OPTIMUM")) defineConstant("COMMON_OPTIMUM", 0.0);
+    if (!exists("OPTIMUM_DELTA")) defineConstant("OPTIMUM_DELTA", 0.0);
+    if (!exists("SELECTION_VARIANCE"))
+        defineConstant("SELECTION_VARIANCE", 22.0);
+    if (!exists("DIAGNOSTIC_INTERVAL"))
+        defineConstant("DIAGNOSTIC_INTERVAL", 100);
+    if (!exists("SAMPLE_PER_POP")) defineConstant("SAMPLE_PER_POP", 300);
+    if (!exists("BINARY_THRESHOLD")) defineConstant("BINARY_THRESHOLD", 0.0);
+    if (!exists("BALANCE_BINARY_PHENOTYPE"))
+        defineConstant("BALANCE_BINARY_PHENOTYPE", T);
+
+    if (!((DESIGN == "A") | (DESIGN == "B")))
+        stop("DESIGN must be either 'A' or 'B'.");
+    if ((DESIGN == "A") & (OPTIMUM_DELTA != 0.0))
+        stop("DESIGN A requires OPTIMUM_DELTA=0.0.");
+    if ((DESIGN == "B") & (OPTIMUM_DELTA <= 0.0))
+        stop("DESIGN B requires OPTIMUM_DELTA>0.0.");
+    if (SELECTION_VARIANCE <= 0.0)
+        stop("SELECTION_VARIANCE (V_S) must be positive.");
+    if ((TARGET_H2 <= 0.0) | (TARGET_H2 > 1.0))
+        stop("TARGET_H2 must be in (0, 1].");
+
+    // The six QTLs remain at these percentages when CHR_LENGTH changes.
+    defineConstant("QTL_POSITION_FRACTIONS",
+        c(0.13252, 0.28668, 0.41704, 0.53080, 0.71400, 0.91136));
+    defineConstant("QTL_POSITIONS",
+        asInteger(round(QTL_POSITION_FRACTIONS * CHR_LENGTH)));
+    defineConstant("N_QTL", 2 * size(QTL_POSITIONS));
+
+    setSeed(SEED);
+    initializeSLiMModelType("WF");
+    initializeTreeSeq();
+
+    initializeMutationType("m1", 0.5, "f", 0.0);
+    qtlEffects = "if (runif(1) < 0.5) -QTL_EFFECT; else QTL_EFFECT;";
+    initializeMutationType("m2", 0.5, "s", qtlEffects);
+    m2.convertToSubstitution = F;
+    m2.mutationStackPolicy = "l";
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElementType("g2", m2, 1.0);
+
+    // Two autosomes.
+    chromosomeTypes = c("A", "A");
+    chromosomeSymbols = c("A1", "A2");
+    for (chromosome in 1:2)
+    {
+        initializeChromosome(chromosome, CHR_LENGTH,
+            type=chromosomeTypes[chromosome - 1],
+            symbol=chromosomeSymbols[chromosome - 1]);
+
+        positions = QTL_POSITIONS;
+        start = 0;
+        for (pos in positions)
+        {
+            if (start <= pos - 1)
+                initializeGenomicElement(g1, start, pos - 1);
+            initializeGenomicElement(g2, pos, pos);
+            start = pos + 1;
+        }
+        if (start <= CHR_LENGTH - 1)
+            initializeGenomicElement(g1, start, CHR_LENGTH - 1);
+
+        // Mutations arise only at QTL positions during the forward simulation.
+        rates = 0.0;
+        ends = positions[0] - 1;
+        for (i in seqAlong(positions))
+        {
+            pos = positions[i];
+            rates = c(rates, QTL_MUTATION_RATE);
+            ends = c(ends, pos);
+            nextPos = (i < size(positions) - 1) ?
+                positions[i + 1] else CHR_LENGTH;
+            if (pos < nextPos - 1)
+            {
+                rates = c(rates, 0.0);
+                ends = c(ends, nextPos - 1);
+            }
+        }
+        initializeMutationRate(rates, ends);
+        initializeRecombinationRate(RECOMBINATION_RATE);
+    }
+}
+
+function (float) optimumForPopulation(integer populationID)
+{
+    if (DESIGN == "A")
+        return COMMON_OPTIMUM;
+    return (populationID - 1.0) * OPTIMUM_DELTA;
+}
+
+// Two-allele QTL markers.
+mutation(m2)
+{
+    previous = haplosome.containsMarkerMutation(m2, mut.position, T);
+    if (!isNULL(previous))
+        mut.setSelectionCoeff(-previous.selectionCoeff);
+    return T;
+}
+
+mutationEffect(m2) { return 1.0; }
+
+1 early()
+{
+    createDirectory("results");
+    createDirectory(OUT_DIR);
+    sim.addSubpop("p1", N_OLD);
+
+    // Start QTL alleles at approximately equal frequencies.
+    for (chromosome in 1:2)
+    {
+        h = p1.haplosomesForChromosomes(chromosome, includeNulls=F);
+        for (pos in QTL_POSITIONS)
+        {
+            plusIndex = sample(seqAlong(h), asInteger(size(h) / 2));
+            isPlus = rep(F, size(h));
+            isPlus[plusIndex] = T;
+            h[isPlus].addNewMutation(m2, QTL_EFFECT, pos);
+            h[!isPlus].addNewMutation(m2, -QTL_EFFECT, pos);
+        }
+    }
+
+    writeFile(OUT_DIR + "/population_map.tsv",
+        "population\tstage\tsource_population\tfounding_tick\t" +
+        "target_size\toptimum\n" +
+        "p1\told_1\tancestor\t1\t" + N_OLD + "\t" +
+            optimumForPopulation(1) + "\n" +
+        "p2\told_2\tp1\t1000\t" + N_OLD + "\t" +
+            optimumForPopulation(2) + "\n" +
+        "p3\told_3\tp2\t1400\t" + N_OLD + "\t" +
+            optimumForPopulation(3) + "\n" +
+        "p4\tmiddle_1\tp3\t1800\t" + N_MIDDLE + "\t" +
+            optimumForPopulation(4) + "\n" +
+        "p5\tmiddle_2\tp4\t2200\t" + N_MIDDLE + "\t" +
+            optimumForPopulation(5) + "\n" +
+        "p6\tmiddle_3\tp5\t2600\t" + N_MIDDLE + "\t" +
+            optimumForPopulation(6) + "\n" +
+        "p7\tyoung_1\tp6\t3000\t" + N_YOUNG + "\t" +
+            optimumForPopulation(7) + "\n" +
+        "p8\tyoung_2\tp7\t3400\t" + N_YOUNG + "\t" +
+            optimumForPopulation(8) + "\n" +
+        "p9\tyoung_3\tp8\t3800\t" + N_YOUNG + "\t" +
+            optimumForPopulation(9) + "\n" +
+        "p10\tyoung_4\tp9\t4200\t" + N_YOUNG + "\t" +
+            optimumForPopulation(10));
+    writeFile(OUT_DIR + "/population_summary.tsv",
+        "generation\tpopulation\tn\tdesign\toptimum\t" +
+        "selection_variance\ttotal_genetic_variance\t" +
+        "within_population_genetic_variance\t" +
+        "environmental_variance\tmean_genetic_value\t" +
+        "sd_genetic_value\tmean_expressed_phenotype\t" +
+        "sd_expressed_phenotype\tmean_fitness_scaling");
+
+    writeFile(OUT_DIR + "/scenario_parameters.tsv",
+        "seed\tdesign\tcommon_optimum\toptimum_delta\t" +
+        "selection_variance\tqtl_effect\tn_qtl\ttarget_h2\t" +
+        "migration\trecombination_rate\n" +
+        SEED + "\t" + DESIGN + "\t" + COMMON_OPTIMUM + "\t" +
+        OPTIMUM_DELTA + "\t" + SELECTION_VARIANCE + "\t" +
+        QTL_EFFECT + "\t" + N_QTL + "\t" + TARGET_H2 + "\t" +
+        MIGRATION + "\t" + RECOMBINATION_RATE);
+}
+
+// Serial splits with migration between neighbours.
+1000 early()
+{
+    sim.addSubpopSplit("p2", N_OLD, p1);
+    p1.setMigrationRates(p2, MIGRATION);
+    p2.setMigrationRates(p1, MIGRATION);
+}
+
+1400 early()
+{
+    sim.addSubpopSplit("p3", N_OLD, p2);
+    p2.setMigrationRates(p3, MIGRATION);
+    p3.setMigrationRates(p2, MIGRATION);
+}
+
+1800 early()
+{
+    sim.addSubpopSplit("p4", N_MIDDLE, p3);
+    p3.setMigrationRates(p4, MIGRATION);
+    p4.setMigrationRates(p3, MIGRATION);
+}
+
+2200 early()
+{
+    sim.addSubpopSplit("p5", N_MIDDLE, p4);
+    p4.setMigrationRates(p5, MIGRATION);
+    p5.setMigrationRates(p4, MIGRATION);
+}
+
+2600 early()
+{
+    sim.addSubpopSplit("p6", N_MIDDLE, p5);
+    p5.setMigrationRates(p6, MIGRATION);
+    p6.setMigrationRates(p5, MIGRATION);
+}
+
+3000 early()
+{
+    sim.addSubpopSplit("p7", N_YOUNG, p6);
+    p6.setMigrationRates(p7, MIGRATION);
+    p7.setMigrationRates(p6, MIGRATION);
+}
+
+3400 early()
+{
+    sim.addSubpopSplit("p8", N_YOUNG, p7);
+    p7.setMigrationRates(p8, MIGRATION);
+    p8.setMigrationRates(p7, MIGRATION);
+}
+
+3800 early()
+{
+    sim.addSubpopSplit("p9", N_YOUNG, p8);
+    p8.setMigrationRates(p9, MIGRATION);
+    p9.setMigrationRates(p8, MIGRATION);
+}
+
+4200 early()
+{
+    sim.addSubpopSplit("p10", N_YOUNG, p9);
+    p9.setMigrationRates(p10, MIGRATION);
+    p10.setMigrationRates(p9, MIGRATION);
+}
+
+1:5000 late()
+{
+
+    allInds = sim.subpopulations.individuals;
+    allGeneticValues = allInds.sumOfMutationsOfType(m2);
+    totalGeneticVariance = sd(allGeneticValues)^2;
+    withinSS = 0.0;
+    withinDF = 0;
+    for (pop in sim.subpopulations)
+    {
+        popGeneticValues = pop.individuals.sumOfMutationsOfType(m2);
+        if (size(popGeneticValues) > 1)
+        {
+            withinSS = withinSS +
+                sum((popGeneticValues - mean(popGeneticValues))^2);
+            withinDF = withinDF + size(popGeneticValues) - 1;
+        }
+    }
+    withinGeneticVariance = withinSS / withinDF;
+    environmentalVariance = withinGeneticVariance *
+        (1.0 - TARGET_H2) / TARGET_H2;
+    allEnvironmentalDeviations = rnorm(size(allInds), 0.0,
+        sqrt(environmentalVariance));
+    allPhenotypes = allGeneticValues + allEnvironmentalDeviations;
+
+    allInds.tagF = allPhenotypes;
+
+    for (pop in sim.subpopulations)
+    {
+        inds = pop.individuals;
+        geneticValues = inds.sumOfMutationsOfType(m2);
+        expressedPhenotypes = inds.tagF;
+        optimum = optimumForPopulation(pop.id);
+
+        // Standard Gaussian stabilizing selection.
+        inds.fitnessScaling = exp(-((expressedPhenotypes - optimum)^2) /
+            (2.0 * SELECTION_VARIANCE));
+
+        if ((sim.cycle % DIAGNOSTIC_INTERVAL == 0) | (sim.cycle == 1))
+            writeFile(OUT_DIR + "/population_summary.tsv",
+                sim.cycle + "\t" + pop.id + "\t" + pop.individualCount +
+                "\t" + DESIGN + "\t" + optimum + "\t" +
+                SELECTION_VARIANCE + "\t" +
+                totalGeneticVariance + "\t" +
+                withinGeneticVariance + "\t" +
+                environmentalVariance + "\t" +
+                mean(geneticValues) + "\t" + sd(geneticValues) + "\t" +
+                mean(expressedPhenotypes) + "\t" +
+                sd(expressedPhenotypes) + "\t" +
+                mean(inds.fitnessScaling),
+                append=T);
+    }
+}
+
+5000 late()
+{
+    // Final sample.
+    sampledInds = NULL;
+    for (pop in sim.subpopulations)
+    {
+        nToSample = min(c(SAMPLE_PER_POP, pop.individualCount));
+        sampledInds = c(sampledInds, sample(pop.individuals, nToSample));
+    }
+
+    geneticValues = sampledInds.sumOfMutationsOfType(m2);
+
+    phenotypes = sampledInds.tagF;
+    environmentalDeviations = phenotypes - geneticValues;
+    totalGeneticVariance = sd(geneticValues)^2;
+    sampleWithinSS = 0.0;
+    sampleWithinDF = 0;
+    for (pop in sim.subpopulations)
+    {
+        inPopulation = sampledInds.subpopulation.id == pop.id;
+        popGeneticValues = geneticValues[inPopulation];
+        if (size(popGeneticValues) > 1)
+        {
+            sampleWithinSS = sampleWithinSS +
+                sum((popGeneticValues - mean(popGeneticValues))^2);
+            sampleWithinDF = sampleWithinDF + size(popGeneticValues) - 1;
+        }
+    }
+    withinGeneticVariance = sampleWithinSS / sampleWithinDF;
+    
+    // Globally balanced binary phenotype.
+    binaryPhenotypes = rep(0, size(sampledInds));
+    classificationRule = "fixed_threshold";
+    binaryThreshold = BINARY_THRESHOLD;
+
+    if (BALANCE_BINARY_PHENOTYPE)
+    {
+        sampleN = size(sampledInds);
+        if ((sampleN % 2) != 0)
+            stop("BALANCE_BINARY_PHENOTYPE requires an even total sample size.");
+
+        classificationRule = "balanced_globally_by_liability_rank";
+        rankOrder = order(phenotypes);
+        class0N = asInteger(sampleN / 2);
+        class1Indices = rankOrder[class0N:(sampleN - 1)];
+        binaryPhenotypes[class1Indices] = 1;
+
+        sortedLiabilities = sort(phenotypes);
+        binaryThreshold = (sortedLiabilities[class0N - 1] +
+            sortedLiabilities[class0N]) / 2.0;
+    }
+    else
+        binaryPhenotypes = asInteger(phenotypes > BINARY_THRESHOLD);
+    
+    class0Count = sum(binaryPhenotypes == 0);
+    class1Count = sum(binaryPhenotypes == 1);
+    class1Proportion =
+    class1Count / size(binaryPhenotypes);
+
+    individualPath = OUT_DIR + "/individuals.tsv";
+    writeFile(individualPath,
+    "individual_id\tpopulation\tgenetic_value\t" +
+    "environmental_deviation\tliability\tphenotype_binary");
+		  for (i in seqAlong(sampledInds))
+        {
+             ind = sampledInds[i];
+
+             writeFile(individualPath,
+        		 ind.pedigreeID + "\t" +
+             ind.subpopulation.id + "\t" +
+             geneticValues[i] + "\t" +
+             environmentalDeviations[i] + "\t" +
+             phenotypes[i] + "\t" +
+             binaryPhenotypes[i],
+             append=T);
+        }
+    
+    binaryPopulationPath =
+    OUT_DIR + "/binary_population_summary.tsv";
+
+	 writeFile(binaryPopulationPath,
+    "population\tsample_n\tclass_0_n\tclass_1_n\tclass_1_proportion\t" +
+    "global_liability_rank_cutpoint\tclassification_rule");
+
+		  for (pop in sim.subpopulations)
+        {
+        
+            inPopulation =
+                sampledInds.subpopulation.id == pop.id;
+
+            populationBinary =
+                binaryPhenotypes[inPopulation];
+
+    			populationClass0 =
+       			 sum(populationBinary == 0);
+
+    			populationClass1 =
+       			 sum(populationBinary == 1);
+
+ 			   writeFile(binaryPopulationPath,
+      		    pop.id + "\t" +
+                size(populationBinary) + "\t" +
+        			 populationClass0 + "\t" +
+        			 populationClass1 + "\t" +
+	      		 populationClass1 / size(populationBinary) + "\t" +
+                binaryThreshold + "\t" +
+                classificationRule,
+                append=T);
+		   }
+
+    realizedEnvironmentalVariance = sd(environmentalDeviations)^2;
+    realizedH2Within = withinGeneticVariance /
+        (withinGeneticVariance + realizedEnvironmentalVariance);
+    realizedH2Total = totalGeneticVariance /
+        (totalGeneticVariance + realizedEnvironmentalVariance);
+    writeFile(OUT_DIR + "/trait_summary.tsv",
+        "requested_per_population\tsample_n\ttarget_h2\t" +
+        "total_genetic_variance\twithin_population_genetic_variance\t" +
+        "environmental_variance\trealized_h2_within_population\t" +
+        "realized_h2_total\t" +
+        "binary_threshold\tclass_0_n\tclass_1_n\t" +
+        "class_1_proportion\t" +
+        "design\tcommon_optimum\toptimum_delta\t" +
+        "selection_variance\tqtl_effect\tfitness_function\t" +
+        "classification_rule\n" +
+
+        SAMPLE_PER_POP + "\t" +
+        size(sampledInds) + "\t" +
+        TARGET_H2 + "\t" +
+        totalGeneticVariance + "\t" +
+        withinGeneticVariance + "\t" +
+		  realizedEnvironmentalVariance + "\t" +
+   	  realizedH2Within + "\t" +
+        realizedH2Total + "\t" +
+	    binaryThreshold + "\t" +
+    	  class0Count + "\t" +
+        class1Count + "\t" +
+        class1Proportion + "\t" +
+        DESIGN + "\t" +
+        COMMON_OPTIMUM + "\t" +
+        OPTIMUM_DELTA + "\t" +
+        SELECTION_VARIANCE + "\t" +
+        QTL_EFFECT + "\t" +
+        "standard_gaussian_on_expressed_phenotype\t" +
+        classificationRule);
+
+    dosagePath = OUT_DIR + "/qtl_plus_allele_dosage.tsv";
+    dosageHeader = "individual_id\tpopulation";
+    for (qtlIndex in 1:N_QTL)
+        dosageHeader = dosageHeader + "\tQTL" + qtlIndex;
+    writeFile(dosagePath, dosageHeader);
+
+    for (ind in sampledInds)
+    {
+        dosageRow = ind.pedigreeID + "\t" + ind.subpopulation.id;
+        for (chromosome in 1:2)
+        {
+            h = ind.haplosomesForChromosomes(chromosome, includeNulls=F);
+            for (pos in QTL_POSITIONS)
+            {
+                dosage = 0;
+                for (haplosome in h)
+                {
+                    allele = haplosome.containsMarkerMutation(m2, pos, T);
+                    if (!isNULL(allele))
+                        dosage = dosage + asInteger(allele.selectionCoeff > 0.0);
+                }
+                dosageRow = dosageRow + "\t" + dosage;
+            }
+        }
+        writeFile(dosagePath, dosageRow, append=T);
+    }
+
+    mapPath = OUT_DIR + "/qtl_map.tsv";
+    writeFile(mapPath,
+        "qtl\tchromosome\tchromosome_type\tposition\tposition_fraction\t" +
+        "position_percent\teffect_minus\teffect_plus\tfitness_effect");
+    qtlNumber = 1;
+    for (chromosome in 1:2)
+        for (i in seqAlong(QTL_POSITIONS))
+        {
+            pos = QTL_POSITIONS[i];
+            fraction = QTL_POSITION_FRACTIONS[i];
+            writeFile(mapPath,
+                "QTL" + qtlNumber + "\t" + chromosome + "\tautosome\t" +
+                pos + "\t" + fraction + "\t" + (100.0 * fraction) +
+                "\t-" + QTL_EFFECT + "\t" + QTL_EFFECT +
+                "\tstandard_gaussian_stabilizing_selection_on_phenotype",
+                append=T);
+            qtlNumber = qtlNumber + 1;
+        }
+
+    sim.treeSeqOutput(OUT_DIR + "/final_trees", overwriteDirectory=T);
+    sim.simulationFinished();
+}
